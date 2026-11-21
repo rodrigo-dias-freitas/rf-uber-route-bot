@@ -96,85 +96,49 @@ Retorne APENAS um JSON válido com as chaves:
     return data
 
 
+def _period_label(now_str: str) -> str:
+    try:
+        hour = int(str(now_str).strip().split(":")[0])
+    except Exception:
+        return "período atual"
+    if 5 <= hour < 12:
+        return "Manhã"
+    if 12 <= hour < 18:
+        return "Tarde"
+    return "Noite"
+
+
 def generate_initial_plan(state: DayState, now_str: str) -> str:
     meta = float(state.meta_brl or META_DEFAULT)
     zones_str = ", ".join(state.active_zones or ALLOWED_ZONES)
     cutoff = state.cutoff_hour or CUTOFF_DEFAULT
+    period = _period_label(now_str)
     start_line = f"- **Início efetivo:** a partir de {state.start_after_str}\n" if state.start_after_str else ""
     notes_line = f"- **Contexto do dia:** {state.day_notes}\n" if state.day_notes else ""
 
     prompt = f"""
-Hora atual: {now_str}. Meta do dia: R$ {meta:.2f} | Parada prevista: {cutoff}.
-Início previsto: {state.start_after_str or "imediato/manhã"}.
-Regiões ativas hoje: {zones_str}.
-Observações: {state.day_notes or "nenhuma"}.
+    Hora atual do sistema: {now_str} (período atual: {period}).
+    Meta do dia: R$ {meta:.2f} | Parada prevista: {cutoff}.
+    Início previsto: {state.start_after_str or f"imediato ({period})"}.
+    Regiões ativas hoje: {zones_str}.
+    Observações: {state.day_notes or "nenhuma"}.
 
-Analise o print de Tendências de Ganhos enviado e gere o ROTEIRO INICIAL DO DIA.
-Inclua:
+    Se houver um horário visível no print de Tendências de Ganhos, use-o como referência do momento do print (sempre que fizer sentido em relação a {now_str}); caso contrário, use {now_str}.
+    Adapte os rótulos e os blocos do roteiro ao horário real:
+- Não use "Início / Manhã" nem "Almoço" se o horário de referência já for à noite (por exemplo, a partir das 18h).
+- Use apenas os trechos que ainda fazem sentido a partir do horário de referência até {cutoff} (ex.: saída/início noturno, pausa/lanche curta se aplicável e sequência da noite/madrugada).
+
+    Inclua:
 - Foco inicial dentro de: {zones_str} (respeitando se o início é só mais tarde).
-- Janela sugerida de almoço/pausa (se aplicável ao horário) e retorno antes do pico.
-- Sequência tarde/noite e transições entre as regiões ativas até bater R$ {meta:.2f} antes de {cutoff}.
+- Janela sugerida de pausa/refeição apenas se aplicável ao horário de referência.
+- Sequência até bater R$ {meta:.2f} e transições entre as regiões ativas antes de {cutoff}.
 
-Formato exato:
-**Plano do Dia — Meta: R$ {meta:.2f}**
-{start_line}{notes_line}- **Início / Manhã:** ...
-- **Almoço e Retorno:** ...
-- **Tarde / Noite:** ...
+    Formato de resposta:
+    **Plano do Dia — Meta: R$ {meta:.2f}**
+    {start_line}{notes_line}- **Início ({period}):** ...
+- **Próximo bloco / Pausa (se aplicável):** ...
+- **Sequência até {cutoff}:** ...
 - **Fechamento ({cutoff}):** ...
-"""
-    contents = []
-    if state.chart_image_bytes:
-        contents.append(
-            types.Part.from_bytes(
-                data=state.chart_image_bytes,
-                mime_type=state.chart_mime_type,
-            )
-        )
-    contents.append(prompt)
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=_build_system_instruction(state),
-            temperature=0.2,
-        ),
-    )
-    return (response.text or "").strip()
-
-
-def generate_recalculation(
-    state: DayState,
-    now_str: str,
-    remaining_brl: float,
-    hours_left: float,
-    needed_per_hour: float,
-) -> str:
-    meta = float(state.meta_brl or META_DEFAULT)
-    zones = state.active_zones or list(ALLOWED_ZONES)
-    zones_str = ", ".join(zones)
-    cutoff = state.cutoff_hour or CUTOFF_DEFAULT
-    in_active_zone = state.current_zone in zones
-    has_image = "Sim (pode ser mapa de calor atualizado ou gráfico do dia)" if state.chart_image_bytes else "Não"
-
-    prompt = f"""
-    Hora de referência: {now_str} (horas úteis restantes até {cutoff}: {hours_left:.1f}h).
-    Início previsto: {state.start_after_str or "já rodando"}.
-    Valor acumulado: R$ {state.current_amount_brl:.2f} | Meta do dia: R$ {meta:.2f} | Falta: R$ {remaining_brl:.2f}.
-    Média necessária: R$ {needed_per_hour:.2f}/h.
-    Zona atual: {state.current_zone} (dentro das regiões ativas hoje [{zones_str}]: {"Sim" if in_active_zone else "Não"}).
-    Observações do dia: {state.day_notes or "nenhuma"}.
-    Imagem anexada disponível: {has_image}.
-
-    Gere o RECÁLCULO RÁPIDO considerando:
-    1. A imagem anexada (se houver): se for mapa de calor, identifique onde há maior concentração/demanda visível dentro de [{zones_str}] sem inventar manchas inexistentes; se for o gráfico de tendências, use as janelas de movimento.
-    2. O ritmo necessário ({needed_per_hour:.2f}/h até {cutoff}), a posição atual ({state.current_zone}) e o contexto do dia.
-
-    Formato exato (máximo 4 linhas):
-    **Ajuste de Rota — Faltam R$ {remaining_brl:.2f}**
-    - **Ritmo:** [Adiantado / Na linha / Exigindo mais giro] — média necessária de R$ {needed_per_hour:.2f}/h até {cutoff}.
-    - **Agora ({state.current_zone}):** ...
-    - **Próximo passo:** ...
     """
     contents = []
     if state.chart_image_bytes:
@@ -194,4 +158,63 @@ def generate_recalculation(
             temperature=0.2,
         ),
     )
+    
+    return (response.text or "").strip()
+
+def generate_recalculation(
+    state: DayState,
+    now_str: str,
+    remaining_brl: float,
+    hours_left: float,
+    needed_per_hour: float,
+) -> str:
+    meta = float(state.meta_brl or META_DEFAULT)
+    zones = state.active_zones or list(ALLOWED_ZONES)
+    zones_str = ", ".join(zones)
+    cutoff = state.cutoff_hour or CUTOFF_DEFAULT
+    period = _period_label(now_str)
+    in_active_zone = state.current_zone in zones
+    has_image = "Sim (pode ser mapa de calor atualizado ou gráfico do dia)" if state.chart_image_bytes else "Não"
+
+    prompt = f"""
+    Hora de referência do sistema: {now_str} (período atual: {period}; horas úteis restantes até {cutoff}: {hours_left:.1f}h).
+    Início previsto: {state.start_after_str or f"já rodando ({period})"}.
+    Valor acumulado: R$ {state.current_amount_brl:.2f} | Meta do dia: R$ {meta:.2f} | Falta: R$ {remaining_brl:.2f}.
+    Média necessária: R$ {needed_per_hour:.2f}/h.
+    Zona atual: {state.current_zone} (dentro das regiões ativas hoje [{zones_str}]: {"Sim" if in_active_zone else "Não"}).
+    Observações do dia: {state.day_notes or "nenhuma"}.
+    Imagem anexada disponível: {has_image}.
+
+    Se houver um horário visível na imagem anexada, use-o como referência do momento do print (quando fizer sentido em relação a {now_str}); caso contrário, use {now_str}.
+    Adapte os termos de horário/período ao momento real (por exemplo, à noite ou madrugada não use "manhã" ou "almoço").
+
+    Gere o RECÁLCULO RÁPIDO considerando:
+1. A imagem anexada (se houver): se for mapa de calor, identifique onde há maior concentração/demanda visível dentro de [{zones_str}] sem inventar manchas inexistentes; se for o gráfico de tendências, use as janelas de movimento a partir do horário de referência.
+2. O ritmo necessário ({needed_per_hour:.2f}/h até {cutoff}), a posição atual ({state.current_zone}) e o contexto do dia.
+
+    Formato exato (máximo 4 linhas):
+    **Ajuste de Rota — Faltam R$ {remaining_brl:.2f}**
+- **Ritmo:** [Adiantado / Na linha / Exigindo mais giro] — média necessária de R$ {needed_per_hour:.2f}/h até {cutoff}.
+- **Agora ({state.current_zone}):** ...
+- **Próximo passo:** ...
+    """
+    contents = []
+    if state.chart_image_bytes:
+        contents.append(
+            types.Part.from_bytes(
+                data=state.chart_image_bytes,
+                mime_type=state.chart_mime_type,
+            )
+        )
+    contents.append(prompt)
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_instruction(state),
+            temperature=0.2,
+        ),
+    )
+    
     return (response.text or "").strip()

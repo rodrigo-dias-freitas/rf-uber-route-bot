@@ -40,17 +40,18 @@ def _format_zones(zones: list[str]) -> str:
     return ", ".join(zones) if zones else ", ".join(ALLOWED_ZONES)
 
 
-async def _send_markdown_safe(target_message, text: str, edit: bool = False) -> None:
+async def _send_markdown_safe(target_message, text: str, edit: bool = False):
+    safe_text = (text or "").strip() or "Não foi possível gerar a mensagem no momento."
     try:
         if edit:
-            await target_message.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+            await target_message.edit_text(safe_text, parse_mode=ParseMode.MARKDOWN)
         else:
-            await target_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            await target_message.reply_text(safe_text, parse_mode=ParseMode.MARKDOWN)
     except Exception:
         if edit:
-            await target_message.edit_text(text)
+            await target_message.edit_text(safe_text)
         else:
-            await target_message.reply_text(text)
+            await target_message.reply_text(safe_text)
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -85,13 +86,15 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.photo:
         return
-
+    
     user_id = update.effective_user.id
     state = get_today_state(user_id)
 
     now_dt = datetime.now(TZ)
     now_str = now_dt.strftime("%H:%M")
     caption = (update.message.caption or "").strip()
+
+    print("DEBUG HANDLE_PHOTO CHEGOU:", user_id, now_str, "caption=", repr(caption))
 
     is_heatmap_update = False
     if caption:
@@ -157,8 +160,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     else:
         reply = generate_initial_plan(state, now_str)
 
-    await _send_markdown_safe(status_msg, reply, edit=True)
+    if not reply or not str(reply).strip():
+        reply = "Não consegui gerar a análise do print agora. Tente enviar a imagem novamente em instantes."
 
+    await _send_markdown_safe(status_msg, reply, edit=True)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
